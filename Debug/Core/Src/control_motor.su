@@ -1,0 +1,6 @@
+../Core/Src/control_motor.c:25:6:Motor_Init	8	static
+../Core/Src/control_motor.c:51:6:Motor_Stop	8	static
+../Core/Src/control_motor.c:64:6:Motor_SetPWM	32	static
+../Core/Src/control_motor.c:102:6:Motor_UpdateEncoder	16	static
+../Core/Src/control_motor.c:127:6:Motor_UpdateSpeed	24	static
+../Core/Src/control_motor.c:137:6:Motor_PrintSpeed	200	static
