@@ -6,6 +6,7 @@
 # Add inputs and outputs from these tool invocations to the build variables 
 C_SRCS += \
 ../Core/Src/HX711.c \
+../Core/Src/PID_motor.c \
 ../Core/Src/control_motor.c \
 ../Core/Src/hienthi.c \
 ../Core/Src/line_follow.c \
@@ -20,6 +21,7 @@ C_SRCS += \
 
 OBJS += \
 ./Core/Src/HX711.o \
+./Core/Src/PID_motor.o \
 ./Core/Src/control_motor.o \
 ./Core/Src/hienthi.o \
 ./Core/Src/line_follow.o \
@@ -34,6 +36,7 @@ OBJS += \
 
 C_DEPS += \
 ./Core/Src/HX711.d \
+./Core/Src/PID_motor.d \
 ./Core/Src/control_motor.d \
 ./Core/Src/hienthi.d \
 ./Core/Src/line_follow.d \
@@ -54,7 +57,7 @@ Core/Src/%.o Core/Src/%.su Core/Src/%.cyclo: ../Core/Src/%.c Core/Src/subdir.mk
 clean: clean-Core-2f-Src
 
 clean-Core-2f-Src:
-	-$(RM) ./Core/Src/HX711.cyclo ./Core/Src/HX711.d ./Core/Src/HX711.o ./Core/Src/HX711.su ./Core/Src/control_motor.cyclo ./Core/Src/control_motor.d ./Core/Src/control_motor.o ./Core/Src/control_motor.su ./Core/Src/hienthi.cyclo ./Core/Src/hienthi.d ./Core/Src/hienthi.o ./Core/Src/hienthi.su ./Core/Src/line_follow.cyclo ./Core/Src/line_follow.d ./Core/Src/line_follow.o ./Core/Src/line_follow.su ./Core/Src/loadcell.cyclo ./Core/Src/loadcell.d ./Core/Src/loadcell.o ./Core/Src/loadcell.su ./Core/Src/main.cyclo ./Core/Src/main.d ./Core/Src/main.o ./Core/Src/main.su ./Core/Src/pid_line.cyclo ./Core/Src/pid_line.d ./Core/Src/pid_line.o ./Core/Src/pid_line.su ./Core/Src/stm32f1xx_hal_msp.cyclo ./Core/Src/stm32f1xx_hal_msp.d ./Core/Src/stm32f1xx_hal_msp.o ./Core/Src/stm32f1xx_hal_msp.su ./Core/Src/stm32f1xx_it.cyclo ./Core/Src/stm32f1xx_it.d ./Core/Src/stm32f1xx_it.o ./Core/Src/stm32f1xx_it.su ./Core/Src/syscalls.cyclo ./Core/Src/syscalls.d ./Core/Src/syscalls.o ./Core/Src/syscalls.su ./Core/Src/sysmem.cyclo ./Core/Src/sysmem.d ./Core/Src/sysmem.o ./Core/Src/sysmem.su ./Core/Src/system_stm32f1xx.cyclo ./Core/Src/system_stm32f1xx.d ./Core/Src/system_stm32f1xx.o ./Core/Src/system_stm32f1xx.su
+	-$(RM) ./Core/Src/HX711.cyclo ./Core/Src/HX711.d ./Core/Src/HX711.o ./Core/Src/HX711.su ./Core/Src/PID_motor.cyclo ./Core/Src/PID_motor.d ./Core/Src/PID_motor.o ./Core/Src/PID_motor.su ./Core/Src/control_motor.cyclo ./Core/Src/control_motor.d ./Core/Src/control_motor.o ./Core/Src/control_motor.su ./Core/Src/hienthi.cyclo ./Core/Src/hienthi.d ./Core/Src/hienthi.o ./Core/Src/hienthi.su ./Core/Src/line_follow.cyclo ./Core/Src/line_follow.d ./Core/Src/line_follow.o ./Core/Src/line_follow.su ./Core/Src/loadcell.cyclo ./Core/Src/loadcell.d ./Core/Src/loadcell.o ./Core/Src/loadcell.su ./Core/Src/main.cyclo ./Core/Src/main.d ./Core/Src/main.o ./Core/Src/main.su ./Core/Src/pid_line.cyclo ./Core/Src/pid_line.d ./Core/Src/pid_line.o ./Core/Src/pid_line.su ./Core/Src/stm32f1xx_hal_msp.cyclo ./Core/Src/stm32f1xx_hal_msp.d ./Core/Src/stm32f1xx_hal_msp.o ./Core/Src/stm32f1xx_hal_msp.su ./Core/Src/stm32f1xx_it.cyclo ./Core/Src/stm32f1xx_it.d ./Core/Src/stm32f1xx_it.o ./Core/Src/stm32f1xx_it.su ./Core/Src/syscalls.cyclo ./Core/Src/syscalls.d ./Core/Src/syscalls.o ./Core/Src/syscalls.su ./Core/Src/sysmem.cyclo ./Core/Src/sysmem.d ./Core/Src/sysmem.o ./Core/Src/sysmem.su ./Core/Src/system_stm32f1xx.cyclo ./Core/Src/system_stm32f1xx.d ./Core/Src/system_stm32f1xx.o ./Core/Src/system_stm32f1xx.su
 
 .PHONY: clean-Core-2f-Src
 

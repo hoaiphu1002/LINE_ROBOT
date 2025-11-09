@@ -1,4 +1,5 @@
 "./Core/Src/HX711.o"
+"./Core/Src/PID_motor.o"
 "./Core/Src/control_motor.o"
 "./Core/Src/hienthi.o"
 "./Core/Src/line_follow.o"

@@ -3,143 +3,309 @@
  *
  *  Created on: Oct 22, 2025
  *      Author: TRƯƠNG VŨ HOÀI PHÚ
+ *
+ *  Cập nhật:
+ *  - Motor_SetSpeedMps(left_mps, right_mps) chấp nhận cả giá trị âm/dương.
+ *  - Thêm LEFT_INVERTED / RIGHT_INVERTED: đặt =1 nếu motor vật lý lắp ngược.
+ *  - Motor_Debug_CheckPWM in thêm trạng thái direction + RPM (có dấu) + v(m/s).
  */
 
 #include "control_motor.h"
-#include <stdlib.h>   // abs()
-#include <stdio.h>
-#include <string.h>
+#include <math.h>
+#include "stdio.h"
 #include "hienthi.h"
-// ======= External peripheral handles (do CubeMX sinh) =======
-extern TIM_HandleTypeDef htim1; // PWM (TIM1)
-extern TIM_HandleTypeDef htim2; // Encoder left
-extern TIM_HandleTypeDef htim4; // Encoder right
-extern UART_HandleTypeDef huart1;
 
-// ======= Biến toàn cục =======
-Motor_t Motor_Left;
-Motor_t Motor_Right;
+/*--------------------------------------------------------------
+ * 1. CÁC THÔNG SỐ CƠ BẢN
+ *-------------------------------------------------------------*/
+#define ENCODER_PPR        1320.0f     // (330 xung * 4 do chế độ TI12)
+#define CONTROL_PERIOD_S   0.01f       // Thời gian cập nhật tốc độ: 10ms
+#define WHEEL_DIAMETER_M   0.065f      // Đường kính bánh xe: 65mm
+#define WHEEL_DIAMETER_MM  65.0f      // Đường kính bánh xe: 65mm
+#define WHEEL_CIRC_M       (M_PI * WHEEL_DIAMETER_M)  // Chu vi bánh xe
+#define PWM_MAX            100.0f      // PWM duty tối đa (100%)
+#define RPM_MAX            333.0f
+#define RPM_TO_MS(rpm)    ((M_PI * WHEEL_DIAMETER_MM * (rpm)) / 60000.0f)
+#define SPEED_TO_DUTY(v_mps)  ((60000.0f * (v_mps) * 100.0f) / (M_PI * WHEEL_DIAMETER_MM * RPM_MAX))
 
+/*--------------------------------------------------------------
+ * 2. CHÂN ĐIỀU KHIỂN TB6612 (THIẾT LẬP CHIỀU)
+ *-------------------------------------------------------------*/
 
-// ======= Khởi tạo (start PWM + encoder) =======
+/*--------------------------------------------------------------
+ ĐỘNG CƠ TRÁI
+ *-------------------------------------------------------------*/
+#define LEFT_IN1_GPIO_Port  GPIOB
+#define LEFT_IN1_Pin        GPIO_PIN_0
+#define LEFT_IN2_GPIO_Port  GPIOB
+#define LEFT_IN2_Pin        GPIO_PIN_1
+
+/*--------------------------------------------------------------
+ ĐỘNG CƠ PHẢI
+ *-------------------------------------------------------------*/
+#define RIGHT_IN1_GPIO_Port GPIOA
+#define RIGHT_IN1_Pin       GPIO_PIN_5
+#define RIGHT_IN2_GPIO_Port GPIOA
+#define RIGHT_IN2_Pin       GPIO_PIN_6
+
+/*--------------------------------------------------------------
+ * 3. CẤU HÌNH NGƯỢC (nếu motor gắn ngược vật lý)
+ *  - Đặt =1 nếu motor đó gắn NGƯỢC so với hướng "dương = tiến" của hệ người dùng
+ *-------------------------------------------------------------*/
+#define LEFT_INVERTED  0   // đổi 1 nếu motor trái gắn ngược
+#define RIGHT_INVERTED 0   // đổi 1 nếu motor phải gắn ngược
+
+/*--------------------------------------------------------------
+ * 4. BIẾN TOÀN CỤC LƯU TRẠNG THÁI ENCODER & TỐC ĐỘ
+ *-------------------------------------------------------------*/
+static int32_t enc_left_prev = 0;   // Giá trị counter lần trước
+static int32_t enc_right_prev = 0;
+static float rpm_left = 0.0f;
+static float rpm_right = 0.0f;
+
+/*--------------------------------------------------------------
+ * 5. KHAI BÁO EXTERN (handlers từ main.c)
+ *-------------------------------------------------------------*/
+extern TIM_HandleTypeDef htim1;
+extern TIM_HandleTypeDef htim2;
+extern TIM_HandleTypeDef htim3;
+extern TIM_HandleTypeDef htim4;
+
+/*--------------------------------------------------------------
+ * 6. HÀM KHỞI TẠO
+ *-------------------------------------------------------------*/
 void Motor_Init(void)
 {
-    // Start PWM channels (TIM1 CH1 = Right, CH2 = Left)
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);
-    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_2);
+    /* Khởi động PWM */
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_4);   // PWM right
+    HAL_TIM_PWM_Start(&htim1, TIM_CHANNEL_1);   // PWM left
+    __HAL_TIM_MOE_ENABLE(&htim1);
 
-    // Start encoder timers
-    HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL);
-    HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL);
+    /* Khởi động encoder */
+    HAL_TIM_Encoder_Start(&htim4, TIM_CHANNEL_ALL); // Encoder trái
+    HAL_TIM_Encoder_Start(&htim2, TIM_CHANNEL_ALL); // Encoder phải
 
-    // Reset counter để bắt đầu đo từ 0
-    __HAL_TIM_SET_COUNTER(&htim2, 0);
-    __HAL_TIM_SET_COUNTER(&htim4, 0);
+    /* Ghi nhận giá trị ban đầu */
+    enc_left_prev  = __HAL_TIM_GET_COUNTER(&htim4);
+    enc_right_prev = __HAL_TIM_GET_COUNTER(&htim2);
 
-    Motor_Left.last_counts = 0;
-    Motor_Left.total_counts = 0;
-    Motor_Left.speed_mps = 0.0f;
-
-    Motor_Right.last_counts = 0;
-    Motor_Right.total_counts = 0;
-    Motor_Right.speed_mps = 0.0f;
-
-    Motor_Stop();
+    /* Dừng motor ban đầu */
+    Motor_SetDuty(0, 0);
+    Motor_SetDirectionLeft(DIR_COAST);
+    Motor_SetDirectionRight(DIR_COAST);
 }
 
-// ======= Dừng động cơ (zero PWM và tắt tín hiệu chiều) =======
-void Motor_Stop(void)
+/*--------------------------------------------------------------
+ * 7. SET DIRECTION
+ *-------------------------------------------------------------*/
+void Motor_SetDirectionLeft(uint8_t dir)
 {
-    // Tắt chân điều khiển chiều (bi-direction pins)
-    HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5 | GPIO_PIN_6, GPIO_PIN_RESET); // left dir pins
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0 | GPIO_PIN_1, GPIO_PIN_RESET); // right dir pins
-
-    // Set compare = 0 -> 0% duty
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, 0);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, 0);
+    switch (dir)
+    {
+        case DIR_FORWARD:
+            HAL_GPIO_WritePin(LEFT_IN1_GPIO_Port, LEFT_IN1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(LEFT_IN2_GPIO_Port, LEFT_IN2_Pin, GPIO_PIN_RESET);
+            break;
+        case DIR_BACKWARD:
+            HAL_GPIO_WritePin(LEFT_IN1_GPIO_Port, LEFT_IN1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(LEFT_IN2_GPIO_Port, LEFT_IN2_Pin, GPIO_PIN_SET);
+            break;
+        case DIR_BRAKE:
+            HAL_GPIO_WritePin(LEFT_IN1_GPIO_Port, LEFT_IN1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(LEFT_IN2_GPIO_Port, LEFT_IN2_Pin, GPIO_PIN_SET);
+            break;
+        case DIR_COAST:
+        default:
+            HAL_GPIO_WritePin(LEFT_IN1_GPIO_Port, LEFT_IN1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(LEFT_IN2_GPIO_Port, LEFT_IN2_Pin, GPIO_PIN_RESET);
+            break;
+    }
 }
 
-// ======= Set PWM theo phần trăm -100..100 =======
-// left_percent, right_percent: dương => tiến; âm => lùi
-void Motor_SetPWM(int8_t left_percent, int8_t right_percent)
+void Motor_SetDirectionRight(uint8_t dir)
 {
+    switch (dir)
+    {
+        case DIR_FORWARD:
+            HAL_GPIO_WritePin(RIGHT_IN1_GPIO_Port, RIGHT_IN1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(RIGHT_IN2_GPIO_Port, RIGHT_IN2_Pin, GPIO_PIN_RESET);
+            break;
+        case DIR_BACKWARD:
+            HAL_GPIO_WritePin(RIGHT_IN1_GPIO_Port, RIGHT_IN1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(RIGHT_IN2_GPIO_Port, RIGHT_IN2_Pin, GPIO_PIN_SET);
+            break;
+        case DIR_BRAKE:
+            HAL_GPIO_WritePin(RIGHT_IN1_GPIO_Port, RIGHT_IN1_Pin, GPIO_PIN_SET);
+            HAL_GPIO_WritePin(RIGHT_IN2_GPIO_Port, RIGHT_IN2_Pin, GPIO_PIN_SET);
+            break;
+        case DIR_COAST:
+        default:
+            HAL_GPIO_WritePin(RIGHT_IN1_GPIO_Port, RIGHT_IN1_Pin, GPIO_PIN_RESET);
+            HAL_GPIO_WritePin(RIGHT_IN2_GPIO_Port, RIGHT_IN2_Pin, GPIO_PIN_RESET);
+            break;
+    }
+}
 
-    // Lấy ARR (AutoReload) hiện tại của timer PWM để quy đổi percent -> compare value
-    // Formula: compare = (percent_abs / 100) * ARR
-    uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim1); // ARR giá trị cấu hình trong CubeMX
-    uint32_t left_compare  = (uint32_t)(( (uint32_t)abs(left_percent)  * arr) / PWM_MAX_DUTY);
-    uint32_t right_compare = (uint32_t)(( (uint32_t)abs(right_percent) * arr) / PWM_MAX_DUTY);
+/*--------------------------------------------------------------
+ * 8. SET DUTY (mapping TIM1 CH1 = left, TIM1 CH4 = right)
+ *-------------------------------------------------------------*/
+void Motor_SetDuty(float left_percent, float right_percent)
+{
+    if (left_percent < 0) left_percent = 0;
+    if (left_percent > 100) left_percent = 100;
+    if (right_percent < 0) right_percent = 0;
+    if (right_percent > 100) right_percent = 100;
 
-    // Set chân chiều quay (direction pins)
-    if (left_percent >= 0) {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_SET);   // BI1 = 1
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_RESET); // BI2 = 0
+    uint32_t arr_left  = __HAL_TIM_GET_AUTORELOAD(&htim1);
+    uint32_t arr_right = __HAL_TIM_GET_AUTORELOAD(&htim1);
+
+    uint32_t ccr_left  = (uint32_t)((left_percent  / 100.0f) * (arr_left + 1));
+    uint32_t ccr_right = (uint32_t)((right_percent / 100.0f) * (arr_right + 1));
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_left);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ccr_right);
+}
+
+/*--------------------------------------------------------------
+ * 9. ĐỌC ENCODER & TÍNH RPM (unchanged)
+ *-------------------------------------------------------------*/
+void Motor_ReadSpeed(void)
+{
+    int32_t enc_left_now  = __HAL_TIM_GET_COUNTER(&htim4);
+    int32_t enc_right_now = __HAL_TIM_GET_COUNTER(&htim2);
+
+    int32_t delta_left  = enc_left_now - enc_left_prev;
+    if (delta_left > 32767)  delta_left -= 65536;
+    if (delta_left < -32768) delta_left += 65536;
+
+    int32_t delta_right = enc_right_now - enc_right_prev;
+    if (delta_right > 32767)  delta_right -= 65536;
+    if (delta_right < -32768) delta_right += 65536;
+
+    enc_left_prev  = enc_left_now;
+    enc_right_prev = enc_right_now;
+
+    float rev_per_tick_left  = 1.0f / ENCODER_PPR;
+    float rev_per_tick_right = 1.0f / ENCODER_PPR;
+
+    float rps_left  = (delta_left  * rev_per_tick_left)  / CONTROL_PERIOD_S;
+    float rps_right = (delta_right * rev_per_tick_right) / CONTROL_PERIOD_S;
+
+    rpm_left  = rps_left  * 60.0f;
+    rpm_right = rps_right * 60.0f;
+}
+
+/*--------------------------------------------------------------
+ * 10. LẤY RPM (không can thiệp dấu) & VẬN TỐC (m/s)
+ *    RPM giữ dấu do delta encoder đã thể hiện chiều quay
+ *-------------------------------------------------------------*/
+float Motor_GetLeftRPM(void)
+{
+    return rpm_left;
+}
+
+float Motor_GetRightRPM(void)
+{
+    return rpm_right;
+}
+
+float Motor_GetSpeedLeftMS(void)
+{
+    return RPM_TO_MS(Motor_GetLeftRPM()); // có thể âm
+}
+
+float Motor_GetSpeedRightMS(void)
+{
+    return RPM_TO_MS(Motor_GetRightRPM()); // có thể âm
+}
+
+float Motor_GetSpeedAverageMS(void)
+{
+    return (Motor_GetSpeedLeftMS() + Motor_GetSpeedRightMS()) / 2.0f;
+}
+
+/*--------------------------------------------------------------
+ * 11. Motor_SetSpeedMps nhận cả âm/dương: set direction + duty tự động
+ *
+ *  Quy ước:
+ *   - Tham số left_speed_mps/right_speed_mps: dấu dương = tiến theo "hệ người dùng".
+ *   - Nếu motor vật lý gắn ngược, set LEFT_INVERTED / RIGHT_INVERTED = 1 để auto đảo.
+ *-------------------------------------------------------------*/
+void Motor_SetSpeedMps(float left_speed_mps, float right_speed_mps)
+{
+    // Áp đảo nếu cấu hình motor gắn ngược vật lý
+    float phys_left = (LEFT_INVERTED)  ? -left_speed_mps  : left_speed_mps;
+    float phys_right= (RIGHT_INVERTED) ? -right_speed_mps : right_speed_mps;
+
+    // Chọn direction vật lý dựa trên dấu vận tốc vật lý
+    if (phys_left > 0.0f) {
+        Motor_SetDirectionLeft(DIR_FORWARD);
+    } else if (phys_left < 0.0f) {
+        Motor_SetDirectionLeft(DIR_BACKWARD);
     } else {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_5, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_6, GPIO_PIN_SET);
+        Motor_SetDirectionLeft(DIR_COAST);
     }
 
-    if (right_percent >= 0) {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_SET);   // AI1 = 1
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_RESET); // AI2 = 0
+    if (phys_right > 0.0f) {
+        Motor_SetDirectionRight(DIR_FORWARD);
+    } else if (phys_right < 0.0f) {
+        Motor_SetDirectionRight(DIR_BACKWARD);
     } else {
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0, GPIO_PIN_RESET);
-        HAL_GPIO_WritePin(GPIOB, GPIO_PIN_1, GPIO_PIN_SET);
+        Motor_SetDirectionRight(DIR_COAST);
     }
 
-    // Gán giá trị compare cho timer
-    // Lưu ý: TIM_CHANNEL_1 dùng cho Right PWM (PA8), TIM_CHANNEL_2 cho Left PWM (PA7)
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, right_compare);
-    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_2, left_compare);
+    // Duty luôn dương (tỉ lệ với |v|)
+    float duty_left  = SPEED_TO_DUTY(fabsf(phys_left));
+    float duty_right = SPEED_TO_DUTY(fabsf(phys_right));
+
+    // Giới hạn duty 0..100
+    if (duty_left  > PWM_MAX) duty_left  = PWM_MAX;
+    if (duty_right > PWM_MAX) duty_right = PWM_MAX;
+
+    // Ghi CCR (TIM1 CH1 left, TIM1 CH4 right)
+    uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim1);
+    uint32_t ccr_left  = (uint32_t)((duty_left  / 100.0f) * (arr + 1));
+    uint32_t ccr_right = (uint32_t)((duty_right / 100.0f) * (arr + 1));
+
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_1, ccr_left);
+    __HAL_TIM_SET_COMPARE(&htim1, TIM_CHANNEL_4, ccr_right);
 }
 
-// ======= Đọc encoder: lưu last_counts và xóa counter để đo delta tiếp theo =======
-void Motor_UpdateEncoder(void)
+/*--------------------------------------------------------------
+ * 12. Debug nâng cao: in CCR, direction pins, RPM có dấu và v(m/s)
+ *-------------------------------------------------------------*/
+void Motor_Debug_CheckPWM(void)
 {
-    // Đọc giá trị counter hiện tại (có thể âm nếu timer ở chế độ up/down? ở encoder mode counter là unsigned,
-    // nhưng ta cast về int16_t để nhận giá trị âm nếu cần khi cấu hình đảo chiều bằng logic)
-    // Thực tế TIM counter là unsigned 16-bit; khi ta reset sau đọc, delta = value đọc được.
-    int16_t left_cnt  = (int16_t)__HAL_TIM_GET_COUNTER(&htim2);
-    int16_t right_cnt = (int16_t)__HAL_TIM_GET_COUNTER(&htim4);
+    uint32_t ccr1 = __HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_1);
+    uint32_t ccr4 = __HAL_TIM_GET_COMPARE(&htim1, TIM_CHANNEL_4);
+    uint32_t cnt  = __HAL_TIM_GET_COUNTER(&htim1);
 
-    // Ghi lại và cộng tổng
-    Motor_Left.last_counts  = left_cnt;
-    Motor_Left.total_counts += left_cnt;
+    GPIO_PinState L1 = HAL_GPIO_ReadPin(LEFT_IN1_GPIO_Port, LEFT_IN1_Pin);
+    GPIO_PinState L2 = HAL_GPIO_ReadPin(LEFT_IN2_GPIO_Port, LEFT_IN2_Pin);
+    GPIO_PinState R1 = HAL_GPIO_ReadPin(RIGHT_IN1_GPIO_Port, RIGHT_IN1_Pin);
+    GPIO_PinState R2 = HAL_GPIO_ReadPin(RIGHT_IN2_GPIO_Port, RIGHT_IN2_Pin);
 
-    Motor_Right.last_counts = right_cnt;
-    Motor_Right.total_counts += right_cnt;
+    float left_rpm  = Motor_GetLeftRPM();
+    float right_rpm = Motor_GetRightRPM();
+    float v_left = RPM_TO_MS(left_rpm);
+    float v_right= RPM_TO_MS(right_rpm);
 
-    // Reset counter để lần đọc tiếp theo đo delta mới
-    __HAL_TIM_SET_COUNTER(&htim2, 0);
-    __HAL_TIM_SET_COUNTER(&htim4, 0);
-}
+    char msg[200];
+    if ((htim1.Instance->CR1 & TIM_CR1_CEN) == 0)
+    {
+        sprintf(msg, "TIM1 STOPPED | CNT=%lu | CCR1=%lu CCR4=%lu\r\n", cnt, ccr1, ccr4);
+    }
+    else
+    {
+        sprintf(msg,
+            "TIM1 RUN | CNT=%lu | CCR1=%lu CCR4=%lu\r\n"
+            "DIR_L: IN1=%d IN2=%d | DIR_R: IN1=%d IN2=%d\r\n"
+            "RPM_L=%+.2f | RPM_R=%+.2f | V_L=%+.3f m/s | V_R=%+.3f m/s\r\n",
+            cnt, ccr1, ccr4,
+            (int)L1, (int)L2, (int)R1, (int)R2,
+            left_rpm, right_rpm,
+            v_left, v_right);
+    }
 
-// ======= Tính vận tốc (m/s) từ last_counts và dt =======
-// Công thức cơ bản:
-//  - Số vòng quay trong dt = last_counts / ENC_PULSE_PER_REV
-//  - Quãng đường in dt = vòng * C = (last_counts / ENC_PULSE_PER_REV) * C
-//  - Vận tốc m/s = quãng đường / dt = (last_counts / ENC_PULSE_PER_REV) * (C / dt)
-void Motor_UpdateSpeed(float dt)
-{
-    // Tránh chia cho 0
-    if (dt <= 0) return;
-
-    Motor_Left.speed_mps  = ( (float)Motor_Left.last_counts  / ENC_PULSE_PER_REV ) * ( WHEEL_CIRCUMFERENCE / dt );
-    Motor_Right.speed_mps = ( (float)Motor_Right.last_counts / ENC_PULSE_PER_REV ) * ( WHEEL_CIRCUMFERENCE / dt );
-}
-
-// ======= In tốc độ qua UART (m/s và RPM) =======
-void Motor_PrintSpeed(void)
-{
-    char buf[128];
-    // RPM tính từ speed_mps:
-    // rpm = speed_mps / circumference (m per rev) * 60 (s -> min)
-    float left_rpm  = (Motor_Left.speed_mps  / WHEEL_CIRCUMFERENCE) * 60.0f;
-    float right_rpm = (Motor_Right.speed_mps / WHEEL_CIRCUMFERENCE) * 60.0f;
-
-    snprintf(buf, sizeof(buf),
-             "L: %.3f m/s (%.1f RPM) | R: %.3f m/s (%.1f RPM)\r\n",
-             Motor_Left.speed_mps, left_rpm,
-             Motor_Right.speed_mps, right_rpm);
-    print_uart(buf);
+    print_uart(msg);
 }

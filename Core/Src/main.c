@@ -25,6 +25,8 @@
 #include "HX711.h"
 #include "loadcell.h"
 #include "line_follow.h"
+#include "control_motor.h"
+#include "stdio.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -121,8 +123,12 @@ int main(void)
 	                GPIOB, GPIO_PIN_9,   // SCK
 	                415.713012f, -321367);
 	  FOLLOW_Init();
+	  Motor_Init();
 	  print_uart("=== LINE SENSOR TEST START ===\r\n");
+	  Motor_SetSpeedMps(0.3f, 0.3f);  // Chạy thẳng 2s đầu
 
+	  uint32_t start_time = HAL_GetTick();
+	  uint8_t state = 0; // 0: thẳng, 1: trái, 2: phải, 3: dừng, 4 : chạy thẳng
 
   /* USER CODE END 2 */
 
@@ -130,10 +136,71 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  HAL_UART_Transmit(&huart1, (uint8_t*)"UART OK\r\n", 9, 100);
-//	  LoadCell_Print(&loadcell); // tự đọc và gửi dữ liệu
-	  FOLLOW_TestSensors();
-	  HAL_Delay(100);
+	   /* Kiểm tra PWM và tốc độ để debug */
+	    Motor_Debug_CheckPWM();
+
+	    uint32_t now = HAL_GetTick();
+
+	          switch (state)
+	          {
+	              case 0: // 🚗 Đi thẳng 2s
+	                  Motor_SetSpeedMps(0.3f, 0.3f);
+	                  if (now - start_time >= 2000)
+	                  {
+	                      state = 1;
+	                      start_time = now;
+	                      print_uart("➡️  Đang quẹo trái\r\n");
+	                  }
+	                  break;
+
+	              case 1: // ⤴️ Quẹo trái 2s
+	                  // Bánh trái lùi, bánh phải tiến
+	                  Motor_SetSpeedMps(0.03f, 0.3f);
+	                  if (now - start_time >= 2000)
+	                  {
+	                      state = 2;
+	                      start_time = now;
+	                      print_uart("➡️  Đang quẹo phải\r\n");
+	                  }
+	                  break;
+
+	              case 2: // ⤵️ Quẹo phải 2s
+	                  // Bánh trái tiến, bánh phải lùi
+	                  Motor_SetSpeedMps(0.3f, 0.03f);
+	                  if (now - start_time >= 2000)
+	                  {
+	                      state = 3;
+	                      start_time = now;
+	                      print_uart("➡️  Chạy thẳng tiếp 5s\r\n");
+	                  }
+	                  break;
+
+	              case 3: // 🚗 Đi thẳng 5s sau khi quẹo phải
+	                  Motor_SetSpeedMps(0.3f, 0.3f);
+	                  if (now - start_time >= 5000)
+	                  {
+	                      state = 4;
+	                      start_time = now;
+	                      print_uart("🛑  Dừng hẳn\r\n");
+	                  }
+	                  break;
+
+	              case 4: // 🛑 Dừng
+	                  Motor_SetSpeedMps(0.0f, 0.0f);
+	                  break;
+	          }
+
+
+	    // Đọc encoder và hiển thị tốc độ thực
+	    Motor_ReadSpeed();
+
+	    float v_left  = Motor_GetSpeedLeftMS();
+	    float v_right = Motor_GetSpeedRightMS();
+
+	    char buffer[96];
+	    sprintf(buffer, "V_trai: %.2f m/s | V_Phai: %.2f m/s\r\n", v_left, v_right);print_uart(buffer);
+
+	    HAL_Delay(200); // Cập nhật mỗi 200 ms
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -290,12 +357,12 @@ static void MX_TIM1_Init(void)
 
   /* USER CODE END TIM1_Init 1 */
   htim1.Instance = TIM1;
-  htim1.Init.Prescaler = 0;
+  htim1.Init.Prescaler = 71;
   htim1.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim1.Init.Period = 65535;
+  htim1.Init.Period = 99;
   htim1.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
   htim1.Init.RepetitionCounter = 0;
-  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim1.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_PWM_Init(&htim1) != HAL_OK)
   {
     Error_Handler();
@@ -362,8 +429,8 @@ static void MX_TIM2_Init(void)
   htim2.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim2.Init.Period = 65535;
   htim2.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
@@ -407,11 +474,11 @@ static void MX_TIM3_Init(void)
 
   /* USER CODE END TIM3_Init 1 */
   htim3.Instance = TIM3;
-  htim3.Init.Prescaler = 0;
+  htim3.Init.Prescaler = 71;
   htim3.Init.CounterMode = TIM_COUNTERMODE_UP;
-  htim3.Init.Period = 65535;
+  htim3.Init.Period = 99;
   htim3.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
+  htim3.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
   if (HAL_TIM_PWM_Init(&htim3) != HAL_OK)
   {
     Error_Handler();
@@ -460,8 +527,8 @@ static void MX_TIM4_Init(void)
   htim4.Init.CounterMode = TIM_COUNTERMODE_UP;
   htim4.Init.Period = 65535;
   htim4.Init.ClockDivision = TIM_CLOCKDIVISION_DIV1;
-  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
-  sConfig.EncoderMode = TIM_ENCODERMODE_TI1;
+  htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_ENABLE;
+  sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
@@ -502,7 +569,7 @@ static void MX_USART1_UART_Init(void)
 
   /* USER CODE END USART1_Init 1 */
   huart1.Instance = USART1;
-  huart1.Init.BaudRate = 115200;
+  huart1.Init.BaudRate = 9600;
   huart1.Init.WordLength = UART_WORDLENGTH_8B;
   huart1.Init.StopBits = UART_STOPBITS_1;
   huart1.Init.Parity = UART_PARITY_NONE;
