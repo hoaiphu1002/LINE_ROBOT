@@ -129,78 +129,85 @@ int main(void)
 
 	  uint32_t start_time = HAL_GetTick();
 	  uint8_t state = 0; // 0: thẳng, 1: trái, 2: phải, 3: dừng, 4 : chạy thẳng
-
+	  uint32_t last_speed_time = 0;    // để đọc motor mỗi 10 ms
+	  uint32_t last_print_time = 0;    // để in UART mỗi 200 ms
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	   /* Kiểm tra PWM và tốc độ để debug */
-	    Motor_Debug_CheckPWM();
+	  uint32_t now = HAL_GetTick();
 
-	    uint32_t now = HAL_GetTick();
+	     /* ====== (1) CẬP NHẬT TỐC ĐỘ MỖI 10 ms ====== */
+	     if (now - last_speed_time >= 10)   // 10 ms
+	     {
+	         last_speed_time = now;
+	         Motor_ReadSpeed();             // ✅ ĐÚNG CHU KỲ 10 ms
+	     }
 
-	          switch (state)
-	          {
-	              case 0: // 🚗 Đi thẳng 2s
-	                  Motor_SetSpeedMps(0.3f, 0.3f);
-	                  if (now - start_time >= 2000)
-	                  {
-	                      state = 1;
-	                      start_time = now;
-	                      print_uart("➡️  Đang quẹo trái\r\n");
-	                  }
-	                  break;
+	     /* ====== (2) STATE MACHINE CỦA XE ====== */
+	     switch (state)
+	     {
+	         case 0: // 🚗 Đi thẳng 2s
+	             Motor_SetSpeedMps(0.3f, 0.3f);
+	             if (now - start_time >= 2000)
+	             {
+	                 state = 1;
+	                 start_time = now;
+	                 print_uart("➡️  Đang quẹo trái\r\n");
+	             }
+	             break;
 
-	              case 1: // ⤴️ Quẹo trái 2s
-	                  // Bánh trái lùi, bánh phải tiến
-	                  Motor_SetSpeedMps(0.03f, 0.3f);
-	                  if (now - start_time >= 2000)
-	                  {
-	                      state = 2;
-	                      start_time = now;
-	                      print_uart("➡️  Đang quẹo phải\r\n");
-	                  }
-	                  break;
+	         case 1: // ⤴️ Quẹo trái 2s
+	             Motor_SetSpeedMps(0.03f, 0.3f);
+	             if (now - start_time >= 2000)
+	             {
+	                 state = 2;
+	                 start_time = now;
+	                 print_uart("➡️  Đang quẹo phải\r\n");
+	             }
+	             break;
 
-	              case 2: // ⤵️ Quẹo phải 2s
-	                  // Bánh trái tiến, bánh phải lùi
-	                  Motor_SetSpeedMps(0.3f, 0.03f);
-	                  if (now - start_time >= 2000)
-	                  {
-	                      state = 3;
-	                      start_time = now;
-	                      print_uart("➡️  Chạy thẳng tiếp 5s\r\n");
-	                  }
-	                  break;
+	         case 2: // ⤵️ Quẹo phải 2s
+	             Motor_SetSpeedMps(0.3f, 0.03f);
+	             if (now - start_time >= 2000)
+	             {
+	                 state = 3;
+	                 start_time = now;
+	                 print_uart("➡️  Chạy thẳng tiếp 5s\r\n");
+	             }
+	             break;
 
-	              case 3: // 🚗 Đi thẳng 5s sau khi quẹo phải
-	                  Motor_SetSpeedMps(0.3f, 0.3f);
-	                  if (now - start_time >= 5000)
-	                  {
-	                      state = 4;
-	                      start_time = now;
-	                      print_uart("🛑  Dừng hẳn\r\n");
-	                  }
-	                  break;
+	         case 3: // 🚗 Đi thẳng 5s
+	             Motor_SetSpeedMps(0.3f, 0.3f);
+	             if (now - start_time >= 5000)
+	             {
+	                 state = 4;
+	                 start_time = now;
+	                 print_uart("🛑  Dừng hẳn\r\n");
+	             }
+	             break;
 
-	              case 4: // 🛑 Dừng
-	                  Motor_SetSpeedMps(0.0f, 0.0f);
-	                  break;
-	          }
+	         case 4: // 🛑 Dừng
+	             Motor_SetSpeedMps(0.0f, 0.0f);
+	             break;
+	     }
 
+	     /* ====== (3) IN TỐC ĐỘ MỖI 200 ms ====== */
+	     if (now - last_print_time >= 200)
+	     {
+	         last_print_time = now;
 
-	    // Đọc encoder và hiển thị tốc độ thực
-	    Motor_ReadSpeed();
+	         float v_left  = Motor_GetSpeedLeftMS();
+	         float v_right = Motor_GetSpeedRightMS();
 
-	    float v_left  = Motor_GetSpeedLeftMS();
-	    float v_right = Motor_GetSpeedRightMS();
-
-	    char buffer[96];
-	    sprintf(buffer, "V_trai: %.2f m/s | V_Phai: %.2f m/s\r\n", v_left, v_right);print_uart(buffer);
-
-	    HAL_Delay(200); // Cập nhật mỗi 200 ms
+	         char buffer[96];
+	         sprintf(buffer,
+	                 "V_trai: %.2f m/s | V_Phai: %.2f m/s\r\n",
+	                 v_left, v_right);
+	         print_uart(buffer);
+	     }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
